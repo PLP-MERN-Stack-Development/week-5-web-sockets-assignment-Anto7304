@@ -21,6 +21,7 @@ export const useSocket = () => {
   const [messages, setMessages] = useState([]);
   const [users, setUsers] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
+  const [notifications, setNotifications] = useState([]);
 
   // Connect to socket server
   const connect = (username) => {
@@ -30,6 +31,11 @@ export const useSocket = () => {
     }
   };
 
+  // Join a chat room
+  const joinRoom = (room) => {
+    socket.emit('join_room', room);
+  };
+
   // Disconnect from socket server
   const disconnect = () => {
     socket.disconnect();
@@ -37,7 +43,7 @@ export const useSocket = () => {
 
   // Send a message
   const sendMessage = (message) => {
-    socket.emit('send_message', { message });
+    socket.emit('send_message', message);
   };
 
   // Send a private message
@@ -78,7 +84,6 @@ export const useSocket = () => {
     };
 
     const onUserJoined = (user) => {
-      // You could add a system message here
       setMessages((prev) => [
         ...prev,
         {
@@ -86,12 +91,12 @@ export const useSocket = () => {
           system: true,
           message: `${user.username} joined the chat`,
           timestamp: new Date().toISOString(),
+          room: user.room,
         },
       ]);
     };
 
     const onUserLeft = (user) => {
-      // You could add a system message here
       setMessages((prev) => [
         ...prev,
         {
@@ -99,6 +104,7 @@ export const useSocket = () => {
           system: true,
           message: `${user.username} left the chat`,
           timestamp: new Date().toISOString(),
+          room: user.room,
         },
       ]);
     };
@@ -106,6 +112,15 @@ export const useSocket = () => {
     // Typing events
     const onTypingUsers = (users) => {
       setTypingUsers(users);
+    };
+
+    // Notification events
+    const onNotifyMessage = (message) => {
+      setNotifications((prev) => [...prev, message]);
+      // Browser notification
+      if (window.Notification && Notification.permission === 'granted') {
+        new Notification(`New message from ${message.sender}`, { body: message.message });
+      }
     };
 
     // Register event listeners
@@ -117,6 +132,7 @@ export const useSocket = () => {
     socket.on('user_joined', onUserJoined);
     socket.on('user_left', onUserLeft);
     socket.on('typing_users', onTypingUsers);
+    socket.on('notify_message', onNotifyMessage);
 
     // Clean up event listeners
     return () => {
@@ -128,6 +144,7 @@ export const useSocket = () => {
       socket.off('user_joined', onUserJoined);
       socket.off('user_left', onUserLeft);
       socket.off('typing_users', onTypingUsers);
+      socket.off('notify_message', onNotifyMessage);
     };
   }, []);
 
@@ -138,11 +155,13 @@ export const useSocket = () => {
     messages,
     users,
     typingUsers,
+    notifications,
     connect,
     disconnect,
     sendMessage,
     sendPrivateMessage,
     setTyping,
+    joinRoom,
   };
 };
 

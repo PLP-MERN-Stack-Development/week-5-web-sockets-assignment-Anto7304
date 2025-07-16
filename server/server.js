@@ -28,57 +28,86 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Store connected users and messages
 const users = {};
-const messages = [];
-const typingUsers = {};
+const messages = {}; // { roomName: [messages] }
+const typingUsers = {}; // { roomName: { socketId: username } }
+
+// Helper to get messages for a room
+function getRoomMessages(room) {
+  if (!messages[room]) messages[room] = [];
+  return messages[room];
+}
+
+// Helper to get typing users for a room
+function getRoomTyping(room) {
+  if (!typingUsers[room]) typingUsers[room] = {};
+  return typingUsers[room];
+}
 
 // Socket.io connection handler
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
+  // Track user's current room
+  let currentRoom = 'General';
+
   // Handle user joining
   socket.on('user_join', (username) => {
     users[socket.id] = { username, id: socket.id };
-    io.emit('user_list', Object.values(users));
-    io.emit('user_joined', { username, id: socket.id });
-    console.log(`${username} joined the chat`);
+    socket.join(currentRoom);
+    io.to(currentRoom).emit('user_list', getUsersInRoom(currentRoom));
+    io.to(currentRoom).emit('user_joined', { username, id: socket.id, room: currentRoom });
+    console.log(`${username} joined the chat in room ${currentRoom}`);
+  });
+
+  // Handle room change
+  socket.on('join_room', (room) => {
+    socket.leave(currentRoom);
+    // Remove from typing in old room
+    if (getRoomTyping(currentRoom)[socket.id]) {
+      delete getRoomTyping(currentRoom)[socket.id];
+      io.to(currentRoom).emit('typing_users', Object.values(getRoomTyping(currentRoom)));
+    }
+    socket.join(room);
+    currentRoom = room;
+    io.to(currentRoom).emit('user_list', getUsersInRoom(currentRoom));
+    io.to(currentRoom).emit('user_joined', { username: users[socket.id]?.username, id: socket.id, room: currentRoom });
   });
 
   // Handle chat messages
   socket.on('send_message', (messageData) => {
+    const room = messageData.room || currentRoom;
     const message = {
       ...messageData,
       id: Date.now(),
       sender: users[socket.id]?.username || 'Anonymous',
       senderId: socket.id,
       timestamp: new Date().toISOString(),
+      room,
     };
-    
-    messages.push(message);
-    
-    // Limit stored messages to prevent memory issues
-    if (messages.length > 100) {
-      messages.shift();
+    getRoomMessages(room).push(message);
+    if (getRoomMessages(room).length > 100) {
+      getRoomMessages(room).shift();
     }
-    
-    io.emit('receive_message', message);
+    io.to(room).emit('receive_message', message);
+    // Emit notification event
+    io.to(room).emit('notify_message', message);
   });
 
   // Handle typing indicator
   socket.on('typing', (isTyping) => {
+    const room = currentRoom;
     if (users[socket.id]) {
       const username = users[socket.id].username;
-      
       if (isTyping) {
-        typingUsers[socket.id] = username;
+        getRoomTyping(room)[socket.id] = username;
       } else {
-        delete typingUsers[socket.id];
+        delete getRoomTyping(room)[socket.id];
       }
-      
-      io.emit('typing_users', Object.values(typingUsers));
+      io.to(room).emit('typing_users', Object.values(getRoomTyping(room)));
     }
   });
 
-  // Handle private messages
+  // Handle private messages (not room-scoped)
   socket.on('private_message', ({ to, message }) => {
     const messageData = {
       id: Date.now(),
@@ -88,7 +117,6 @@ io.on('connection', (socket) => {
       timestamp: new Date().toISOString(),
       isPrivate: true,
     };
-    
     socket.to(to).emit('private_message', messageData);
     socket.emit('private_message', messageData);
   });
@@ -97,25 +125,33 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     if (users[socket.id]) {
       const { username } = users[socket.id];
-      io.emit('user_left', { username, id: socket.id });
-      console.log(`${username} left the chat`);
+      io.to(currentRoom).emit('user_left', { username, id: socket.id, room: currentRoom });
+      console.log(`${username} left the chat in room ${currentRoom}`);
     }
-    
     delete users[socket.id];
-    delete typingUsers[socket.id];
-    
-    io.emit('user_list', Object.values(users));
-    io.emit('typing_users', Object.values(typingUsers));
+    if (getRoomTyping(currentRoom)[socket.id]) {
+      delete getRoomTyping(currentRoom)[socket.id];
+      io.to(currentRoom).emit('typing_users', Object.values(getRoomTyping(currentRoom)));
+    }
+    io.to(currentRoom).emit('user_list', getUsersInRoom(currentRoom));
   });
 });
 
+// Helper to get users in a room
+function getUsersInRoom(room) {
+  const roomSockets = io.sockets.adapter.rooms.get(room) || new Set();
+  return Array.from(roomSockets).map(id => users[id]).filter(Boolean);
+}
+
 // API routes
 app.get('/api/messages', (req, res) => {
-  res.json(messages);
+  const room = req.query.room || 'General';
+  res.json(getRoomMessages(room));
 });
 
 app.get('/api/users', (req, res) => {
-  res.json(Object.values(users));
+  const room = req.query.room || 'General';
+  res.json(getUsersInRoom(room));
 });
 
 // Root route
